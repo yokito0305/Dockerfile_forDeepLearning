@@ -202,3 +202,8 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate jupyterlab && \
                     nohup jupyter lab > ./jupyterlab/jupyterlab.log 2>&1 & \
                     sudo /etc/init.d/ssh start && bash"]
+
+# ============================= dockerfile-end =====================================
+
+# docker build -t deep-learning-with-jupyter . --build-arg username=user --build-arg userUID=1000 --build-arg userGID=100 --build-arg jupyterPort=8888 --build-arg SSH_Port=22 --no-cache --network=host
+# docker run -it --gpus all -p 8888:8888 -p 22:22 --name deep-learning-with-jupyter deep-learning-with-jupyter

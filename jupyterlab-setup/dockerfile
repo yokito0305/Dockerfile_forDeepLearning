@@ -1,0 +1,58 @@
+FROM yokito/miniconda-setup
+
+# 設定參數
+LABEL maintainer="Deep Learning Environment with JupyterLab @ yokito"
+
+USER $userUID
+
+# 設定環境變數
+ENV jupyterPort=8888 \
+    jupyterDir=/home/${username}/jupyterlab
+
+# Setup work directory for backward-compatibility
+RUN mkdir -p ${jupyterDir}
+
+# activate conda environment and install jupyterlab
+# see https://pythonspeed.com/articles/activate-conda-dockerfile/
+RUN conda create -y -n jupyterlab python=3.12 && \
+    conda init && \
+    source ~/.bashrc
+SHELL ["conda", "run", "-n", "jupyterlab", "/bin/bash", "-o", "pipefail", "-c"]
+RUN conda install -y -c conda-forge 'notebook>=7.2.2' jupyter_core jupyterlab jupyterlab-language-pack-zh-TW
+
+RUN python -c 'from jupyter_server.auth import passwd; print(passwd("${username}"))'
+# set jupyterlab root directory
+RUN JUPYTER_PASSWORD_HASH=$(python -c "from jupyter_server.auth import passwd; print(passwd(passphrase='${username}'))") && \
+    jupyter lab --generate-config && \
+    echo "c.LabServerApp.workspaces_dir = '${jupyterDir}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.LabApp.workspaces_dir = '${jupyterDir}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.root_dir = '/home/${username}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.allow_remote_access = True" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.ip = '*' " >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.port = ${jupyterPort}" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.open_browser = False" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.allow_root = True" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.token = ''" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.password = '${JUPYTER_PASSWORD_HASH}'" >> /home/${username}/.jupyter/jupyter_lab_config.py
+
+# to see jupyter_lab_config.py for more information
+## -> cat /home/${username}/.jupyter/jupyter_lab_config.py | grep dir
+
+# generate jupyterlab password
+# python -c 'from jupyter_server.auth import passwd; print(passwd())'
+
+EXPOSE ${jupyterPort}
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate jupyterlab && nohup jupyter lab > ./jupyterlab/jupyterlab.log 2>&1 & bash"]
+
+# test in jupyterlab
+# run nvidia-smi command
+# python :
+# import os
+# os.system('nvidia-smi')
+
+# docker build -t yokito/jupyterlab-setup . --network=host --no-cache
+# docker run -it --rm -p 8888:8888 --gpus all --name jupyterlab-setup yokito/jupyterlab-setup
+
+# docker push yokito/jupyterlab-setup

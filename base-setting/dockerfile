@@ -1,0 +1,49 @@
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+# 設定參數
+LABEL maintainer="base environment setting @ yokito"
+
+# Fix DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+# 設定時區
+ENV TZ=Asia/Taipei
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -yq tzdata
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN dpkg-reconfigure --frontend noninteractive tzdata
+
+# 安裝相關基本套件
+RUN apt-get install -yq \
+    wget \
+    git \
+    vim \
+    sudo \
+    bzip2 \
+    ca-certificates \
+    locales \
+    fonts-liberation \
+    tini \
+    && apt-get clean  && rm -rf /var/lib/apt/lists/*
+
+# 設定環境變數
+ENV LC_ALL=zh_TW.UTF-8 \
+    LANG=zh_TW.UTF-8 \
+    LANGUAGE=zh_TW.UTF-8
+
+# 設定語系
+RUN echo "zh_TW.UTF-8 UTF-8" > /etc/locale.gen && \
+    echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen && \
+    locale-gen
+
+# Enable prompt color in the skeleton .bashrc before creating the default username
+RUN sed -i 's/^#force_color_prompt=yes/force_color_prompt=yes/' /etc/skel/.bashrc
+
+CMD ["/bin/bash"]
+
+# docker build -t yokito/base-setting . --no-cache --network=host
+# docker run -it --rm -p 8888:8888 -p 22:22 --gpus all --name base-setting yokito/base-setting
+
+# docker push yokito/base-setting

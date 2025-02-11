@@ -1,0 +1,72 @@
+FROM yokito/base-setting
+
+# 設定參數
+LABEL maintainer="miniconda-setup @ yokito"
+ARG username=yokito
+ARG userUID=1000
+ARG userGID=100
+ARG USER_HOME_PATH=/home/$username
+
+# 設定環境變數
+ENV username=${username} \
+    userUID=${userUID} \
+    userGID=${userGID} \
+    PYTHON_VERSION=3.12 \
+    CONDA_DIR=/opt/conda
+
+
+# Copy a script that we will use to correct permissions after running certain commands
+COPY fix-permissions /usr/local/bin/fix-permissions
+RUN chmod a+rx /usr/local/bin/fix-permissions
+
+# Install Miniconda on x86 or ARM platforms
+RUN arch=$(uname -m) && \
+    if [ "$arch" = "x86_64" ]; then \
+    # MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"; \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-py312_24.11.1-0-Linux-x86_64.sh"; \
+    elif [ "$arch" = "aarch64" ]; then \
+    # MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"; \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-py312_24.11.1-0-Linux-aarch64.sh"; \
+    else \
+    echo "Unsupported architecture: $arch"; \
+    exit 1; \
+    fi && \
+    wget $MINICONDA_URL -O /tmp/miniconda.sh && \
+    /bin/bash /tmp/miniconda.sh -b -p "${CONDA_DIR}"&& \
+    rm -f /tmp/miniconda.sh
+
+# Add conda to the path
+RUN echo 'export CONDA_DIR=/opt/conda' >> /etc/skel/.bashrc && \
+    echo 'if [[ ":$PATH:" != *":${CONDA_DIR}/bin:"* ]]; then export PATH=${CONDA_DIR}/bin:$PATH; fi' >> /etc/skel/.bashrc && \
+    echo 'eval "$(conda shell.bash hook)"' >> /etc/skel/.bashrc
+
+ENV PATH=$PATH:${CONDA_DIR}/bin
+RUN conda init
+
+# Delete existing user with UID="${userUID}" if it exists
+# hadolint ignore=SC2046
+RUN if grep -q "${userUID}" /etc/passwd; then \
+        userdel --remove $(id -un "${userUID}"); \
+    fi
+
+# Create username with name yokito user with UID=1000 and in the 'users' group
+# and make sure these dirs are writable by the `users` group.;
+RUN useradd -m -s /bin/bash -u ${userUID} -g ${userGID} --no-user-group -G sudo ${username}
+RUN chown ${username}:${userGID} ${CONDA_DIR} && \
+    fix-permissions ${USER_HOME_PATH} && \
+    fix-permissions ${CONDA_DIR}
+
+RUN echo "root:ubuntu" | chpasswd
+RUN echo "${username}:${username}" | chpasswd
+    
+# Set the default user
+USER $userUID
+WORKDIR $USER_HOME_PATH
+
+CMD ["/bin/bash"]
+
+
+# docker build -t yokito/miniconda-setup . --network=host --no-cache 
+# docker run -it --rm -p 8888:8888 -p 22:22 --gpus all --name miniconda-setup yokito/miniconda-setup
+
+# docker push yokito/miniconda-setup

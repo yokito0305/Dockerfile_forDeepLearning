@@ -1,0 +1,204 @@
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+# ============================= base-setting =====================================
+LABEL maintainer="base environment setting @ yokito"
+
+# Fix DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+# 設定時區
+ENV TZ=Asia/Taipei
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -yq tzdata
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN dpkg-reconfigure --frontend noninteractive tzdata
+
+# 安裝相關基本套件
+RUN apt-get install -yq \
+    wget \
+    git \
+    vim \
+    sudo \
+    bzip2 \
+    ca-certificates \
+    locales \
+    fonts-liberation \
+    tini \
+    && apt-get clean  && rm -rf /var/lib/apt/lists/*
+
+# 設定環境變數
+ENV LC_ALL=zh_TW.UTF-8 \
+    LANG=zh_TW.UTF-8 \
+    LANGUAGE=zh_TW.UTF-8
+
+# 設定語系
+RUN echo "zh_TW.UTF-8 UTF-8" > /etc/locale.gen && \
+    echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen && \
+    locale-gen
+
+# Enable prompt color in the skeleton .bashrc before creating the default username
+RUN sed -i 's/^#force_color_prompt=yes/force_color_prompt=yes/' /etc/skel/.bashrc
+
+
+# ============================= miniconda-setup =====================================
+LABEL maintainer="miniconda-setup @ yokito"
+ARG username=user
+ARG userUID=1000
+ARG userGID=100
+ARG USER_HOME_PATH=/home/$username
+
+# 設定環境變數
+ENV username=${username} \
+    userUID=${userUID} \
+    userGID=${userGID} \
+    PYTHON_VERSION=3.12 \
+    CONDA_DIR=/opt/conda
+
+
+# Copy a script that we will use to correct permissions after running certain commands
+COPY fix-permissions /usr/local/bin/fix-permissions
+RUN chmod a+rx /usr/local/bin/fix-permissions
+
+# Install Miniconda on x86 or ARM platforms
+RUN arch=$(uname -m) && \
+    if [ "$arch" = "x86_64" ]; then \
+    # MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"; \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-py312_24.11.1-0-Linux-x86_64.sh"; \
+    elif [ "$arch" = "aarch64" ]; then \
+    # MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"; \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-py312_24.11.1-0-Linux-aarch64.sh"; \
+    else \
+    echo "Unsupported architecture: $arch"; \
+    exit 1; \
+    fi && \
+    wget $MINICONDA_URL -O /tmp/miniconda.sh && \
+    /bin/bash /tmp/miniconda.sh -b -p "${CONDA_DIR}"&& \
+    rm -f /tmp/miniconda.sh
+
+# Add conda to the path
+RUN echo 'export CONDA_DIR=/opt/conda' >> /etc/skel/.bashrc && \
+    echo 'if [[ ":$PATH:" != *":${CONDA_DIR}/bin:"* ]]; then export PATH=${CONDA_DIR}/bin:$PATH; fi' >> /etc/skel/.bashrc && \
+    echo 'eval "$(conda shell.bash hook)"' >> /etc/skel/.bashrc
+
+ENV PATH=$PATH:${CONDA_DIR}/bin
+RUN conda init
+
+# Delete existing user with UID="${userUID}" if it exists
+# hadolint ignore=SC2046
+RUN if grep -q "${userUID}" /etc/passwd; then \
+        userdel --remove $(id -un "${userUID}"); \
+    fi
+
+# Create username with name yokito user with UID=1000 and in the 'users' group
+# and make sure these dirs are writable by the `users` group.;
+RUN useradd -m -s /bin/bash -u ${userUID} -g ${userGID} --no-user-group -G sudo ${username}
+RUN chown ${username}:${userGID} ${CONDA_DIR} && \
+    fix-permissions ${USER_HOME_PATH} && \
+    fix-permissions ${CONDA_DIR}
+
+RUN echo "root:ubuntu" | chpasswd
+RUN echo "${username}:${username}" | chpasswd
+    
+# Set the default user
+USER $userUID
+WORKDIR $USER_HOME_PATH
+
+# ============================= jupyterlab-setup =====================================
+LABEL maintainer="Deep Learning Environment with JupyterLab @ yokito"
+
+# 設定環境變數
+ENV jupyterPort=8888 \
+    jupyterDir=/home/${username}/jupyterlab
+
+# Setup work directory for backward-compatibility
+RUN mkdir -p ${jupyterDir}
+
+# activate conda environment and install jupyterlab
+# see https://pythonspeed.com/articles/activate-conda-dockerfile/
+RUN conda create -y -n jupyterlab python=3.12 && \
+    conda init && \
+    source ~/.bashrc
+SHELL ["conda", "run", "-n", "jupyterlab", "/bin/bash", "-o", "pipefail", "-c"]
+RUN conda install -y -c conda-forge 'notebook>=7.2.2' jupyter_core jupyterlab jupyterlab-language-pack-zh-TW
+
+RUN python -c 'from jupyter_server.auth import passwd; print(passwd("${username}"))'
+# set jupyterlab root directory
+RUN JUPYTER_PASSWORD_HASH=$(python -c "from jupyter_server.auth import passwd; print(passwd(passphrase='${username}'))") && \
+    jupyter lab --generate-config && \
+    echo "c.LabServerApp.workspaces_dir = '${jupyterDir}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.LabApp.workspaces_dir = '${jupyterDir}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.root_dir = '/home/${username}'" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.allow_remote_access = True" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.ip = '*' " >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.port = ${jupyterPort}" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.open_browser = False" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.allow_root = True" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.token = ''" >> /home/${username}/.jupyter/jupyter_lab_config.py && \
+    echo "c.ServerApp.password = '${JUPYTER_PASSWORD_HASH}'" >> /home/${username}/.jupyter/jupyter_lab_config.py
+
+# to see jupyter_lab_config.py for more information
+## -> cat /home/${username}/.jupyter/jupyter_lab_config.py | grep dir
+
+# generate jupyterlab password
+# python -c 'from jupyter_server.auth import passwd; print(passwd())'
+
+EXPOSE ${jupyterPort}
+
+# ============================= ssh-jupyterlab-setup =====================================
+LABEL maintainer="ssh-jupyterlab-setup @ yokito"
+ENV SSH_Port=22
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update && apt-get install -yq openssh-server openssh-client && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 設定 ssh 服務
+RUN sed -i "s/#PermitRootLogin prohibit-password/PermitRootLogin yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PasswordAuthentication yes/PasswordAuthentication yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PermitUserEnvironment no/PermitUserEnvironment yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#Port.*/Port ${SSH_Port}/" /etc/ssh/sshd_config
+
+RUN ssh-keygen -A
+
+# 創建 /run/sshd 目錄並設置權限
+RUN mkdir -p /run/sshd && \
+    mkdir -p /home/${username}/.ssh && \
+    fix-permissions /run/sshd && \
+    fix-permissions /home/${username}/.ssh && \
+    fix-permissions /usr/sbin/sshd
+
+RUN ssh-keygen -t ed25519 -f /home/${username}/.ssh/id_ed25519 -N "" && \
+    ssh-keygen -t rsa -b 4096 -f /home/${username}/.ssh/id_rsa -N "" && \
+    ssh-keygen -y -f /home/${username}/.ssh/id_ed25519 > /home/${username}/.ssh/id_ed25519.pub && \
+    ssh-keygen -y -f /home/${username}/.ssh/id_rsa > /home/${username}/.ssh/id_rsa.pub && \
+    fix-permissions /home/${username}/.ssh
+
+USER ${username}
+
+
+RUN /etc/init.d/ssh start
+
+# RUN service ssh restart
+
+EXPOSE ${SSH_Port}
+
+# ============================= deep-learning-package-setup =====================================
+LABEL maintainer="deep-learning-package-setup @ yokito"
+
+SHELL ["conda", "run", "-n", "jupyterlab", "/bin/bash", "-o", "pipefail", "-c"]
+
+# 設定環境變數
+RUN conda install -y numpy matplotlib pandas h5py pillow scipy -c conda-forge 
+RUN conda install -y pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+RUN conda install -y tensorflow keras opencv -c conda-forge
+RUN conda install -y scikit-learn scikit-image -c conda-forge
+RUN conda install -y transformers -c huggingface
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate jupyterlab && \
+                    nohup jupyter lab > ./jupyterlab/jupyterlab.log 2>&1 & \
+                    sudo /etc/init.d/ssh start && bash"]

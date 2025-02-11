@@ -1,0 +1,48 @@
+FROM yokito/jupyterlab-setup
+
+# 設定參數
+LABEL maintainer="ssh-jupyterlab-setup @ yokito"
+ENV SSH_Port=22
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update && apt-get install -yq openssh-server openssh-client && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 設定 ssh 服務
+RUN sed -i "s/#PermitRootLogin prohibit-password/PermitRootLogin yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PasswordAuthentication yes/PasswordAuthentication yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PermitUserEnvironment no/PermitUserEnvironment yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#Port.*/Port ${SSH_Port}/" /etc/ssh/sshd_config
+
+RUN ssh-keygen -A
+
+# 創建 /run/sshd 目錄並設置權限
+RUN mkdir -p /run/sshd && \
+    mkdir -p /home/${username}/.ssh && \
+    fix-permissions /run/sshd && \
+    fix-permissions /home/${username}/.ssh && \
+    fix-permissions /usr/sbin/sshd
+
+RUN ssh-keygen -t ed25519 -f /home/${username}/.ssh/id_ed25519 -N "" && \
+    ssh-keygen -t rsa -b 4096 -f /home/${username}/.ssh/id_rsa -N "" && \
+    ssh-keygen -y -f /home/${username}/.ssh/id_ed25519 > /home/${username}/.ssh/id_ed25519.pub && \
+    ssh-keygen -y -f /home/${username}/.ssh/id_rsa > /home/${username}/.ssh/id_rsa.pub && \
+    fix-permissions /home/${username}/.ssh
+
+USER ${username}
+
+
+RUN /etc/init.d/ssh start
+
+# RUN service ssh restart
+
+EXPOSE ${SSH_Port}
+
+CMD ["bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate jupyterlab && nohup jupyter lab > ./jupyterlab/jupyterlab.log 2>&1 & sudo /etc/init.d/ssh start && bash"]
+
+# docker build -t yokito/ssh-jupyterlab-setup . --network=host --no-cache
+# docker run -it --rm -p 8888:8888 -p 22:22 --gpus all --name ssh-setup yokito/ssh-jupyterlab-setup
+
+# docker push yokito/ssh-jupyterlab-setup
